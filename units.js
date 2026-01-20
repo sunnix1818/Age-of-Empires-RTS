@@ -1,12 +1,15 @@
-export default class Unit {
-    constructor(x,y){
-        this.x=x; this.y=y;
-        this.hp=100;
-        this.speed=1;
-    }
-    update(){}
-    draw(ctx,t){
-        ctx.fillStyle="white";
-        ctx.fillRect(this.x*t,this.y*t,t,t);
-    }
+class Unit {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.size = 20;
+    this.color = "white";
+  }
+
+  update() {}
+
+  draw(ctx) {
+    ctx.fillStyle = this.color;
+    ctx.fillRect(this.x, this.y, this.size, this.size);
+  }
 }
