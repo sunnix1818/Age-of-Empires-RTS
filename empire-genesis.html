@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <title>Empire Genesis RTS - Steam Ready</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: linear-gradient(135deg, #1e3c72, #2a5298); font-family: 'Segoe UI', sans-serif; overflow: hidden; }
+        canvas { display: block; cursor: crosshair; }
+        #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        #topbar { background: rgba(0,0,0,0.8); color: white; padding: 10px; display: flex; justify-content: space-between; pointer-events: all; }
+        #resources { font-size: 18px; font-weight: bold; }
+        #tech-tree, #gov-panel, #diplo-panel { background: rgba(0,0,0,0.9); color: white; padding: 15px; margin: 10px; border-radius: 10px; pointer-events: all; }
+        #minimap { position: absolute; bottom: 10px; right: 10px; width: 200px; height: 150px; background: rgba(0,0,0,0.7); border: 2px solid #fff; }
+        button { background: #4CAF50; color: white; border: none; padding: 8px 16px; margin: 2px; border-radius: 5px; cursor: pointer; font-size: 14px; }
+        button:hover { background: #45a049; }
+        button:disabled { background: #666; }
+        #menu { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.95); color: white; padding: 40px; border-radius: 15px; text-align: center; display: none; pointer-events: all; }
+        h1 { font-size: 48px; margin-bottom: 20px; text-shadow: 2px 2px 4px #000; }
+    </style>
+</head>
+<body>
+    <canvas id="canvas" width="1400" height="900"></canvas>
+    <div id="ui">
+        <div id="topbar">
+            <div id="resources">Cibo:50 | Legno:30 | Pietra:20 | Oro:10 | Pop:5/50</div>
+            <div>
+                <button onclick="togglePanel('tech')">Tech</button>
+                <button onclick="togglePanel('gov')">Governo</button>
+                <button onclick="togglePanel('diplo')">Diplomazia</button>
+                <button onclick="saveGame()">Salva</button>
+                <button onclick="loadGame()">Carica</button>
+            </div>
+        </div>
+        <div id="tech-tree" style="position:absolute; top:100px; left:10px; display:none;">
+            <h3>🔬 Albero Tecnologico</h3>
+            <button id="tech1" onclick="research('archery')">Arceria (50 oro)</button>
+            <button id="tech2" onclick="research('steel')">Acciaio (100 legno)</button>
+        </div>
+        <div id="gov-panel" style="position:absolute; top:100px; right:10px; display:none;">
+            <h3>🏛️ Governo</h3>
+            <select id="govType" onchange="changeGov()">
+                <option value="monarchy">Monarchia (+milizia)</option>
+                <option value="republic">Repubblica (+commercio)</option>
+                <option value="empire">Impero (+pop)</option>
+            </select>
+            <div>Stabilità: <span id="stability">80%</span></div>
+        </div>
+        <div id="diplo-panel" style="position:absolute; bottom:100px; left:10px; display:none;">
+            <h3>🤝 Diplomazia</h3>
+            <button onclick="diploAction('ally')">Alleanza con IA (20 oro)</button>
+            <div>Relazioni IA: <span id="relations">Neutrale</span></div>
+        </div>
+        <canvas id="minimap" style="pointer-events:none;"></canvas>
+        <div id="menu">
+            <h1>Empire Genesis RTS</h1>
+            <button onclick="startGame('easy')">Nuova Partita - Facile</button><br><br>
+            <button onclick="startGame('normal')">Normale</button><br><br>
+            <button onclick="startGame('hard')">Difficile</button><br><br>
+            <button onclick="toggleMenu()">Menu Principale</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const minimap = document.getElementById('minimap');
+        const mctx = minimap.getContext('2d');
+
+        // Stato avanzato
+        let gameState = {
+            scene: 'menu', // menu, game
+            difficulty: 'normal',
+            resources: {cibo:50, legno:30, pietra:20, oro:10},
+            pop: {current:5, max:50},
+            government: 'monarchy',
+            stability: 80,
+            tech: {archery: false, steel: false},
+            diplomacy: {relations: 0}, // -100 guerra, +100 alleato
+            camera: {x:0, y:0},
+            units: [],
+            enemies: [],
+            buildings: [{x:100, y:100, type:'city_center', hp:1000}],
+            map: {width:3000, height:2000, trees:[], gold:[], stone:[]}
+        };
+
+        // Inizializza mappa Steam-like
+        function initMap() {
+            for(let i=0; i<100; i++) {
+                gameState.map.trees.push({x:Math.random()*3000, y:Math.random()*2000, health:100});
+                gameState.map.gold.push({x:Math.random()*3000, y:Math.random()*2000, amount:100});
+                gameState.map.stone.push({x:Math.random()*3000, y:Math.random()*2000, amount:100});
+            }
+        }
+
+        // Unità avanzate con ereditarietà
+        class Unit {
+            constructor(x, y, type, player='player') {
+                this.x = x; this.y = y; this.type = type; this.player = player;
+                this.hp = type==='villager'?100:type==='soldier'?200:150;
+                this.speed = 2; this.damage = type==='soldier'?25:0;
+                this.selected = false; this.target = null; this.task = 'idle';
+                this.radius = 12;
+            }
+            update(dt) {
+                // Movimento verso target
+                if(this.target) {
+                    const dx = this.target.x - this.x + gameState.camera.x, dy = this.target.y - this.y + gameState.camera.y;
+                    const dist = Math.hypot(dx, dy);
+                    if(dist > 20) {
+                        this.x += (dx/dist) * this.speed * dt;
+                        this.y += (dy/dist) * this.speed * dt;
+                    } else {
+                        if(this.task === 'gather') this.gather();
+                        else if(this.task === 'attack') this.attack();
+                        this.target = null;
+                    }
+                }
+            }
+            gather() {
+                const res = gameState.map.trees.find(t => Math.hypot(t.x-this.x, t.y-this.y)<30);
+                if(res) { res.health--; gameState.resources.legno += 1; }
+                // Simile per gold/stone
+            }
+            attack() {
+                if(this.target.hp > 0) this.target.hp -= this.damage * 0.016; // 60fps
+            }
+            draw() {
+                const screenX = this.x - gameState.camera.x, screenY = this.y - gameState.camera.y;
+                ctx.save();
+                ctx.translate(screenX, screenY);
+                ctx.fillStyle = this.player === 'player' ? '#00FF00' : '#FF0000';
+                ctx.beginPath(); ctx.arc(0,0,this.radius,0,Math.PI*2); ctx.fill();
+                if(this.selected) {
+                    ctx.strokeStyle = '#FFFF00'; ctx.lineWidth=3; ctx.stroke();
+                }
+                // Icona tipo
+                ctx.fillStyle = '#FFF'; ctx.font = '12px Arial'; ctx.fillText(this.type[0].toUpperCase(), -5, 4);
+                // HP bar
+                ctx.fillStyle = '#F00'; ctx.fillRect(-12,-20,24,4);
+                ctx.fillStyle = '#0F0'; ctx.fillRect(-12,-20,(this.hp/200)*24,4);
+                ctx.restore();
+            }
+        }
+
+        // IA avanzata (nemici aggressivi)
+        function updateAI(dt) {
+            gameState.enemies.forEach(e => {
+                if(!e.target) {
+                    const playerUnit = gameState.units.find(u => Math.hypot(u.x-e.x, u.y-e.y) < 200);
+                    if(playerUnit) { e.target = playerUnit; e.task = 'attack'; }
+                }
+                e.update(dt);
+            });
+            // Spawn enemy waves based on difficulty
+            if(Math.random() < (gameState.difficulty === 'hard' ? 0.02 : 0.01)) {
+                gameState.enemies.push(new Unit(Math.random()*3000, Math.random()*2000, 'soldier', 'enemy'));
+            }
+        }
+
+        // Tech tree
+        function research(tech) {
+            const costs = {archery: {oro:50}, steel:{legno:100}};
+            if(gameState.resources[costs[tech][Object.keys(costs[tech])[0]] || 0] >= costs[tech][Object.keys(costs[tech])[0]]) {
+                gameState.tech[tech] = true;
+                document.getElementById(tech).disabled = true;
+                alert(`Ricerca ${tech} completata!`);
+            }
+        }
+
+        // Governo
+        function changeGov() {
+            gameState.government = document.getElementById('govType').value;
+            // Bonus: monarchy +damage, etc.
+        }
+
+        // Diplomazia
+        function diploAction(action) {
+            if(gameState.resources.oro >= 20) {
+                gameState.resources.oro -= 20;
+                gameState.diplomacy.relations += 20;
+                document.getElementById('relations').textContent = gameState.diplomacy.relations > 50 ? 'Alleato' : 'Amico';
+            }
+        }
+
+        // Salva/carica localeStorage (Steam-like)
+        function saveGame() { localStorage.setItem('empireGenesisSave', JSON.stringify(gameState)); }
+        function loadGame() { const save = localStorage.getItem('empireGenesisSave'); if(save) gameState = JSON.parse(save); }
+
+        // Toggle pannelli
+        function togglePanel(panel) {
+            const p = document.getElementById(panel+'-panel');
+            p.style.display = p.style.display === 'none' ? 'block' : 'none';
+        }
+
+        // Start game
+        function startGame(diff) {
+            gameState.difficulty = diff;
+            gameState.scene = 'game';
+            initMap();
+            gameState.units = [new Unit(200,200,'villager'), new Unit(220,220,'soldier')];
+            document.getElementById('menu').style.display = 'none';
+            updateUI();
+        }
+        function toggleMenu() { document.getElementById('menu').style.display = gameState.scene === 'menu' ? 'none' : 'block'; gameState.scene = 'menu'; }
+
+        // Update UI
+        function updateUI() {
+            document.getElementById('resources').textContent = 
+                `Cibo:${Math.floor(gameState.resources.cibo)} | Legno:${Math.floor(gameState.resources.legno)} | Pietra:${Math.floor(gameState.resources.pietra)} | Oro:${Math.floor(gameState.resources.oro)} | Pop:${gameState.pop.current}/${gameState.pop.max}`;
+            document.getElementById('stability').textContent = gameState.stability + '%';
+        }
+
+        // Input
+        const keys = {};
+        window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+        window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+        canvas.addEventListener('click', e => {
+            if(gameState.scene !== 'game') return;
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left + gameState.camera.x;
+            const y = e.clientY - rect.top + gameState.camera.y;
+            // Select nearest
+            const nearest = gameState.units.reduce((closest, u) => {
+                const dist = Math.hypot(u.x - x, u.y - y);
+                return dist < closest.dist ? {unit: u, dist} : closest;
+            }, {dist: Infinity});
+            if(nearest.dist < 20) {
+                gameState.units.forEach(u => u.selected = false);
+                nearest.unit.selected = true;
+                nearest.unit.target = {x, y};
+            }
+        });
+
+        // Main loop 60fps
+        let lastTime = 0;
+        function loop(time) {
+            const dt = (time - lastTime)/1000 * 60; lastTime = time;
+            ctx.clearRect(0,0,canvas.width,canvas.height);
+
+            // Camera WASD
+            if(keys['w']) gameState.camera.y -= 200 * dt / 60;
+            if(keys['s']) gameState.camera.y += 200 * dt / 60;
+            if(keys['a']) gameState.camera.x -= 200 * dt / 60;
+            if(keys['d']) gameState.camera.x += 200 * dt / 60;
+
+            // Draw background
+            ctx.fillStyle = '#90EE90'; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+            // Draw map resources
+            gameState.map.trees.forEach(t => {
+                const sx = t.x - gameState.camera.x, sy = t.y - gameState.camera.y;
+                if(sx > -50 && sx < canvas.width +50 && sy > -50 && sy < canvas.height +50) {
+                    ctx.fillStyle = '#8B4513'; ctx.fillRect(sx-15,sy-25,30,50);
+                }
+            });
+            // Gold/Stone simili...
+
+            gameState.units.forEach(u => { u.update(dt/60); u.draw(); });
+            gameState.enemies.forEach(e => { e.update(dt/60); e.draw(); });
+            gameState.buildings.forEach(b => {
+                const sx = b.x - gameState.camera.x, sy = b.y - gameState.camera.y;
+                ctx.fillStyle = '#A52A2A'; ctx.fillRect(sx-40, sy-40, 80, 80);
+            });
+
+            // Minimap
+            mctx.clearRect(0,0,200,150);
+            mctx.fillStyle = '#90EE90'; mctx.fillRect(0,0,200,150);
+            gameState.units.forEach(u => { mctx.fillStyle = '#00FF00'; mctx.fillRect(u.x/15, u.y/13.3, 2,2); });
+            gameState.enemies.forEach(e => { mctx.fillStyle = '#FF0000'; mctx.fillRect(e.x/15, e.y/13.3, 2,2); });
+            mctx.strokeStyle = '#FFF'; mctx.strokeRect((gameState.camera.x/15), (gameState.camera.y/13.3), 200/15, 150/13.3);
+
+            // Auto risorse + governo bonus
+            gameState.resources.cibo += 0.5 * (gameState.government === 'republic' ? 1.2 : 1);
+            gameState.pop.current = gameState.units.length;
+            if(gameState.pop.current > gameState.pop.max) gameState.stability -= 0.1;
+            updateUI();
+
+            // Cleanup
+            gameState.units = gameState.units.filter(u => u.hp > 0);
+            gameState.enemies = gameState.enemies.filter(e => e.hp > 0);
+
+            requestAnimationFrame(loop);
+        }
+        requestAnimationFrame(loop);
+    </script>
+</body>
+</html>
